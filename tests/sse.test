@@ -1,0 +1,40 @@
+# /**
+#  * Copyright Jerily LTD. All Rights Reserved.
+#  * SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+#  * SPDX-License-Identifier: MIT.
+#  */
+package require tcltest 2
+namespace import ::tcltest::test
+package require openai 0.1
+proc recordSSE {event data} {lappend ::records [list $event $data]}
+test sse-1 {Every byte boundary, BOM, CRLF, comments and multiline data} -body {
+    set records {}
+    set parser [::openai::SSE new recordSSE]
+    set bytes [encoding convertto utf-8 "\ufeff: keepalive\r\nevent: text\r\ndata: 🌍\r\ndata: second\r\n\r\n"]
+    for {set i 0} {$i < [string length $bytes]} {incr i} {$parser feed [string index $bytes $i]}
+    $parser finish
+    set records
+} -cleanup {$parser destroy} -result {{text {🌍
+second}}}
+test sse-2 {LF and CR-only, empty data fields and ignored fields} -body {
+    set records {}
+    set parser [::openai::SSE new recordSSE]
+    $parser feed "data\n\nid: abc\rdata: two\r\rdata: three\n\n"
+    $parser finish
+    set records
+} -cleanup {$parser destroy} -result {{message {}} {message two} {message three}}
+test sse-3 {Unterminated events and lines are rejected} -body {
+    set parser [::openai::SSE new recordSSE]
+    $parser feed "data: unfinished\n"
+    catch {$parser finish}
+} -cleanup {$parser destroy} -result 1
+test sse-4 {Event sizes are bounded across chunks} -body {
+    set parser [::openai::SSE new recordSSE 16]
+    $parser feed "data: 1234\n"
+    catch {$parser feed "data: 5678\n"}
+} -cleanup {$parser destroy} -result 1
+test sse-5 {Malformed UTF-8 is rejected} -body {
+    set parser [::openai::SSE new recordSSE]
+    catch {$parser feed [binary format H* 646174613a20ff0a0a]}
+} -cleanup {$parser destroy} -result 1
+::tcltest::cleanupTests

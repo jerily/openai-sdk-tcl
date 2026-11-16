@@ -1,0 +1,126 @@
+# /**
+#  * Copyright Jerily LTD. All Rights Reserved.
+#  * SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+#  * SPDX-License-Identifier: MIT.
+#  */
+package require tcltest 2
+namespace import ::tcltest::test
+package require openai 0.1
+
+set fixture [open [list | python3 [file join [file dirname [info script]] http-server.py]] r+]
+gets $fixture port
+set url http://127.0.0.1:$port
+set client [::openai::Client new -api_key test -base_url $url -timeout 5000]
+set oldProxy [array get ::env NO_PROXY]
+set ::env(NO_PROXY) 127.0.0.1,localhost
+proc collect {event} {lappend ::events $event}
+proc completed {request} {incr ::done}
+try {
+    test responses-1 {Synchronous JSON result and normalized usage} -body {
+        set r [$client responses -model test -input ok]
+        list [::openai::output_text $r] [dict get [::openai::token_usage $r] total_tokens]
+    } -result {{Hello 🌍} 5}
+    test chat-1 {Non-streaming chat message serialization} -body {
+        set r [$client chat_completions -model test -messages [list [dict create role user content hello]]]
+        ::openai::output_text $r
+    } -result {Hello 🌍}
+    test serialization-1 {Types, unicode, escaping, defaults and caller parameters survive} -body {
+        set r [$client responses -model "test\"🌍" -input echo \
+            -parameters {temperature {N 0.5} tools {L {}} metadata {M {flag {BOOL 1}}}}]
+        list [dict get $r model] [dict get $r store] [dict get $r stream] \
+            [dict get $r temperature] [dict get $r tools] [dict get $r metadata flag]
+    } -result {test\"🌍 0 0 0.5 {} 1}
+    test serialization-2 {Raw JSON supports complex input without losing null or array types} -body {
+        set r [$client responses -json {{"model":"test","input":"echo","metadata":{"a":null},"tools":[]}}]
+        list [dict get $r input] [dict get $r tools] [dict get $r null_preserved]
+    } -result {echo {} 1}
+    test responses-stream-1 {Callbacks receive deltas and the final response is returned} -body {
+        set events {}
+        set r [$client responses -model test -input ok -stream true -on_event collect]
+        set text {}
+        foreach e $events {if {[dict get $e type] eq "response.output_text.delta"} {append text [dict get $e delta]}}
+        list $text [::openai::output_text $r] [dict get [lindex $events end] type]
+    } -result {{Hello 🌍} {Hello 🌍} response.completed}
+    test chat-stream-1 {Choices stay separate and empty-choice usage chunks are retained} -body {
+        set r [$client chat_completions -json {{"model":"test","messages":[]}} -stream true]
+        list [dict get [lindex [dict get $r choices] 0] message content] \
+            [dict get [lindex [dict get $r choices] 1] message content] \
+            [dict get [lindex [dict get $r choices] 1] finish_reason] \
+            [dict get [::openai::token_usage $r] total_tokens]
+    } -result {{Hello 🌍} Second length 5}
+    test chat-stream-2 {Interleaved tool calls accumulate independently} -body {
+        set r [$client chat_completions -json {{"model":"test","messages":[],"test_case":"tools"}} -stream true]
+        set tools [dict get [lindex [dict get $r choices] 0] message tool_calls]
+        list [dict get [lindex $tools 0] function arguments] [dict get [lindex $tools 1] function arguments]
+    } -result {{{"x":1}} {{"y":2}}}
+    test errors-1 {Non-2xx JSON errors are preserved for both request modes} -body {
+        set result {}
+        foreach stream {false true} {
+            catch {$client responses -model test -input http_error -stream $stream} message opts
+            lappend result $message [dict get $opts -errorcode]
+        }
+        set result
+    } -result {{HTTP 429: rate limited} {OPENAI HTTP 429} {HTTP 429: rate limited} {OPENAI HTTP 429}}
+    test errors-2 {Premature EOF never becomes success} -body {
+        catch {$client responses -model test -input truncated -stream true} message opts
+        dict get $opts -errorcode
+    } -result {OPENAI TRUNCATED}
+    test errors-3 {Malformed JSON, failed/incomplete events and wrong content type fail} -body {
+        set errors {}
+        foreach mode {invalid_json failed incomplete wrong_type} {
+            lappend errors [catch {$client responses -model test -input $mode -stream true}]
+        }
+        set errors
+    } -result {1 1 1 1}
+    test errors-4 {Callback exceptions propagate to the synchronous caller} -body {
+        catch {$client responses -model test -input ok -stream true \
+            -on_event {apply {{event} {return -code error -errorcode {APP CALLBACK} "callback failed"}}}} message opts
+        list $message [dict get $opts -errorcode]
+    } -result {{callback failed} {APP CALLBACK}}
+    test async-1 {Async requests complete once and expose metadata} -body {
+        set done 0
+        set r [$client responses -model test -input ok -stream true -async true -on_done completed]
+        vwait done
+        list $done [$r state] [$r http_status] [::openai::output_text [$r result]]
+    } -cleanup {$r destroy} -result {1 done 200 {Hello 🌍}}
+    test async-2 {Cancellation yields a terminal result and one notification} -body {
+        set done 0
+        set r [$client responses -model test -input ok -stream true -async true -on_done completed]
+        $r cancel
+        vwait done
+        catch {$r result} message opts
+        list $done [$r state] [dict get $opts -errorcode]
+    } -cleanup {$r destroy} -result {1 cancelled {OPENAI CANCELLED}}
+    test async-3 {Concurrent requests retain independent buffers} -body {
+        set a [$client responses -model test -input ok -stream true -async true]
+        set b [$client chat_completions -json {{"model":"test","messages":[]}} -stream true -async true]
+        $a wait; $b wait
+        list [dict get [$a result] id] [dict get [$b result] id]
+    } -cleanup {$a destroy; $b destroy} -result {resp_test chat_test}
+    test async-4 {Destroying a request from its event callback is safe} -body {
+        set r [$client responses -model test -input ok -stream true -async true \
+            -on_event {apply {{event} {$::r destroy; set ::gone 1}}}]
+        vwait gone
+        info object isa object $r
+    } -cleanup {unset -nocomplain gone} -result 0
+    test async-5 {Destroying the client cancels and frees owned requests} -body {
+        set c [::openai::Client new -api_key test -base_url $url]
+        set r [$c responses -model test -async true]
+        $c destroy
+        update
+        info object isa object $r
+    } -result 0
+    test limits-1 {Response size limits abort streaming and buffered requests} -body {
+        set c [::openai::Client new -api_key test -base_url $url -max_response_bytes 10]
+        set results {}
+        foreach stream {false true} {lappend results [catch {$c responses -model test -stream $stream}]}
+        $c destroy
+        set results
+    } -result {1 1}
+} finally {
+    $client destroy
+    close $fixture
+    unset -nocomplain ::env(NO_PROXY)
+    array set ::env $oldProxy
+}
+::tcltest::cleanupTests

@@ -1,0 +1,62 @@
+# /**
+#  * Copyright Jerily LTD. All Rights Reserved.
+#  * SPDX-FileCopyrightText: 2026 Neofytos Dimitriou (neo@jerily.cy)
+#  * SPDX-License-Identifier: MIT.
+#  */
+
+name: Test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        include:
+          - tcl: core-8-6-17
+            shell: tclsh8.6
+          - tcl: core-9-1-0
+            shell: tclsh9.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: tcltk/tcl
+          ref: ${{ matrix.tcl }}
+          path: build/tcl
+      - uses: actions/checkout@v4
+        with:
+          repository: jerily/trequests
+          ref: v1.2.0
+          path: build/trequests
+      - uses: actions/checkout@v4
+        with:
+          repository: jerily/tjson
+          ref: v1.0.27
+          path: build/tjson
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev python3
+      - name: Build Tcl
+        working-directory: build/tcl/unix
+        run: |
+          ./configure --prefix="$RUNNER_TEMP/install"
+          make -j2
+          make install
+      - name: Build native packages
+        run: |
+          for package in trequests tjson; do
+            cmake -S "build/$package" -B "build/$package-out" \
+              -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/install" \
+              -DTCL_INCLUDE_PATH="$RUNNER_TEMP/install/include" \
+              -DTCL_LIBRARY_DIR="$RUNNER_TEMP/install/lib"
+            cmake --build "build/$package-out" -j2
+            cmake --install "build/$package-out"
+          done
+      - name: Install and test
+        env:
+          TCLSH_NAME: ${{ matrix.shell }}
+        run: |
+          make install PREFIX="$RUNNER_TEMP/install"
+          make test TCLSH="$RUNNER_TEMP/install/bin/$TCLSH_NAME"

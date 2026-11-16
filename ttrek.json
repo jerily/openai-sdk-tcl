@@ -1,0 +1,76 @@
+{
+  "name": "openai-sdk-tcl",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Tcl client for OpenAI Responses and Chat Completions with SSE streaming.",
+  "url": "https://github.com/jerily/openai-sdk-tcl",
+  "tags": [
+    "tcl",
+    "openai",
+    "ai",
+    "http",
+    "streaming"
+  ],
+  "scripts": {
+    "example-responses": {
+      "file": "run-example.sh",
+      "args": [
+        "responses"
+      ]
+    },
+    "example-chat-completions": {
+      "file": "run-example.sh",
+      "args": [
+        "chat-completions"
+      ]
+    },
+    "example-stream-responses": {
+      "file": "run-example.sh",
+      "args": [
+        "stream-responses"
+      ]
+    },
+    "example-stream-chat-completions": {
+      "file": "run-example.sh",
+      "args": [
+        "stream-chat-completions"
+      ]
+    },
+    "example-async-responses": {
+      "file": "run-example.sh",
+      "args": [
+        "async-responses"
+      ]
+    }
+  },
+  "dependencies": {
+    "tcl": ">=8.6.14",
+    "trequests": "^1.2.0",
+    "tjson": "^1.0.27"
+  },
+  "devDependencies": {},
+  "build": {
+    "default": [
+      {
+        "cmd": "download",
+        "url": "https://github.com/jerily/openai-sdk-tcl/archive/refs/tags/v0.1.0.tar.gz"
+      },
+      {
+        "cmd": "unpack"
+      },
+      {
+        "cmd": "cd",
+        "dirname": "$SOURCE_DIR"
+      },
+      {
+        "cmd": "make_install",
+        "options": [
+          {
+            "name": "PREFIX",
+            "value": "$INSTALL_DIR"
+          }
+        ]
+      }
+    ]
+  }
+}
